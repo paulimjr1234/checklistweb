@@ -1,0 +1,6 @@
+{
+  "name": "PMPI - Checklists Operacionais",
+  "description": "Sistema integrado de gerenciamento de checklists operacionais e fiscalização da Polícia Militar do Piauí.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

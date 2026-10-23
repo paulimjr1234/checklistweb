@@ -1,0 +1,41 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function perfil() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function aprovado() {
+      return request.auth != null &&
+        firestore.exists(/databases/(default)/documents/users/$(request.auth.uid)) &&
+        perfil().status == 'aprovado';
+    }
+
+    function adminGeral() {
+      return aprovado() && perfil().role == 'admin_geral';
+    }
+
+    function daUnidade(unidadeId) {
+      return aprovado() && perfil().unidadeId == unidadeId;
+    }
+
+    // Fotos da vistoria: units/{unidadeId}/vistorias/{vistoriaId}/{angulo}.jpg
+    match /units/{unidadeId}/vistorias/{vistoriaId}/{arquivo} {
+      allow read: if adminGeral() || daUnidade(unidadeId);
+
+      // Somente JPEG de até 1 MiB, com os quatro nomes de ângulo previstos
+      allow write: if (adminGeral() || daUnidade(unidadeId)) &&
+        arquivo.matches('^(frente|ladoMotorista|ladoPassageiro|traseira)\\.jpg$') &&
+        request.resource.size < 1024 * 1024 &&
+        request.resource.contentType == 'image/jpeg';
+
+      allow delete: if adminGeral() || daUnidade(unidadeId);
+    }
+
+    // Todo o resto é negado
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

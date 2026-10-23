@@ -1,0 +1,354 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // Super Admin: Seja por registro em /admins/{uid} ou perfil aprovado com role 'admin_geral'
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          getUserData().role == 'admin_geral' &&
+          getUserData().status == 'aprovado'
+        )
+      );
+    }
+
+    function isApprovedUser() {
+      return isSignedIn() && (
+        isAdmin() ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         getUserData().status == 'aprovado')
+      );
+    }
+
+    function isUnitAdmin(unidadeId) {
+      return isSignedIn() && isApprovedUser() && (
+        isAdmin() ||
+        (getUserData().role == 'administrativo' && getUserData().unidadeId == unidadeId)
+      );
+    }
+
+    // Validation for UserProfile
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'nome', 'matricula', 'email', 'role', 'rolePretendida', 'status', 'grandeComando', 'unidadeId', 'unidadeNome', 'createdAt']) &&
+        data.uid is string && data.uid.size() <= 128 &&
+        data.nome is string && data.nome.size() >= 3 && data.nome.size() <= 120 &&
+        data.matricula is string && data.matricula.size() >= 3 && data.matricula.size() <= 30 &&
+        data.email is string && data.email.size() <= 120 &&
+        data.role in ['operacional', 'administrativo', 'admin_geral'] &&
+        data.rolePretendida in ['operacional', 'administrativo'] &&
+        data.status in ['pendente', 'aprovado', 'rejeitado'] &&
+        data.grandeComando is string && data.grandeComando.size() <= 80 &&
+        data.unidadeId is string && data.unidadeId.size() <= 80 &&
+        data.unidadeNome is string && data.unidadeNome.size() <= 120 &&
+        data.createdAt is string && data.createdAt.size() <= 40;
+    }
+
+    // Validation for Checklist / VistoriaViatura
+    function isValidChecklist(data) {
+      return data.keys().hasAll(['id', 'unidadeId', 'unidadeNome', 'createdAt']) &&
+        data.id is string && data.id.size() <= 128 &&
+        data.unidadeId is string && data.unidadeId.size() <= 80 &&
+        data.unidadeNome is string && data.unidadeNome.size() <= 120 &&
+        data.createdAt is string && data.createdAt.size() <= 60 &&
+        (
+          !('status' in data) ||
+          data.status in ['em_andamento', 'concluida', 'rascunho', 'concluido', 'com_alteracao', 'critico']
+        );
+    }
+
+    // Validation for ViaturaCadastrada
+    function isValidViatura(data) {
+      return data.keys().hasAll(['id', 'unidadeId', 'placa', 'marca', 'modelo', 'status', 'statusAtualizadoEm', 'statusAtualizadoPor', 'createdAt', 'createdBy']) &&
+        data.id is string && isValidId(data.id) &&
+        data.unidadeId is string && data.unidadeId.size() > 0 && data.unidadeId.size() <= 80 &&
+        data.placa is string && data.placa.size() > 0 && data.placa.size() <= 30 &&
+        data.marca is string && data.marca.size() > 0 && data.marca.size() <= 60 &&
+        data.modelo is string && data.modelo.size() > 0 && data.modelo.size() <= 60 &&
+        data.status in ['operante', 'inoperante'] &&
+        (data.status != 'inoperante' || (data.motivoInoperancia is string && data.motivoInoperancia.size() >= 5)) &&
+        data.statusAtualizadoEm is string && data.statusAtualizadoEm.size() <= 60 &&
+        data.statusAtualizadoPor is string && data.statusAtualizadoPor.size() <= 120 &&
+        data.createdAt is string && data.createdAt.size() <= 60 &&
+        data.createdBy is string && data.createdBy.size() <= 120;
+    }
+
+    // Chave canônica da matrícula. Deve ser idêntica a chaveMatricula() em src/utils/formatters.ts
+    function matriculaKey(m) {
+      return m.upper().replace(' ', '').replace('.', '').replace('-', '');
+    }
+
+    // A matrícula foi reservada (documento matriculas/{chave}) na mesma gravação do perfil
+    function matriculaReservada(m) {
+      return getAfter(/databases/$(database)/documents/matriculas/$(matriculaKey(m))).data.uid == request.auth.uid;
+    }
+
+    // Conteúdo mínimo de uma vistoria concluída: itens respondidos e as 4 fotos presentes
+    function isConteudoVistoriaValido(data) {
+      return data.get('status', '') != 'concluida' || (
+        data.get('itensChecklist', []) is list &&
+        data.get('itensChecklist', []).size() >= 9 &&
+        data.get('fotografias', {}) is map &&
+        data.get('fotografias', {}).keys().hasAll(['frente', 'ladoMotorista', 'ladoPassageiro', 'traseira'])
+      );
+    }
+
+    // Validation for resumo de pendências por viatura (aviso "problema já conhecido")
+    function isValidPendenciaVtr(data, placaKey) {
+      return data.keys().hasAll(['placaVTR', 'placaKey', 'unidadeId', 'itens', 'atualizadoEm']) &&
+        data.placaKey == placaKey &&
+        data.placaVTR is string && data.placaVTR.size() > 0 && data.placaVTR.size() <= 30 &&
+        data.unidadeId is string && data.unidadeId.size() <= 80 &&
+        data.itens is map && data.itens.size() <= 20 &&
+        data.atualizadoEm is string && data.atualizadoEm.size() <= 60;
+    }
+
+    // --- USERS COLLECTION ---
+    match /users/{userId} {
+      // O usuário pode ler o próprio perfil; Admin Geral pode ler todos;
+      // Administrador de unidade pode ler policiais da sua própria unidade.
+      allow get: if isSignedIn() && isValidId(userId) && (
+        request.auth.uid == userId ||
+        isAdmin() ||
+        (isApprovedUser() && getUserData().role == 'administrativo' && resource.data.unidadeId == getUserData().unidadeId)
+      );
+
+      // Admin Geral pode listar todos os usuários (inclusive pendentes);
+      // Administrador de unidade só pode listar usuários da sua própria unidade física.
+      allow list: if isSignedIn() && (
+        isAdmin() ||
+        (isApprovedUser() &&
+         getUserData().role == 'administrativo' &&
+         resource.data.unidadeId == getUserData().unidadeId)
+      );
+
+      // Autocadastro inicial: status obrigatoriamente 'pendente' e papel pretendido
+      allow create: if isSignedIn() && isValidId(userId) && request.auth.uid == userId &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == request.auth.uid &&
+        (isAdmin() || (
+          incoming().status == 'pendente' &&
+          incoming().role == incoming().rolePretendida &&
+          matriculaReservada(incoming().matricula)
+        ));
+
+      // Atualização:
+      // 1. O próprio usuário só altera nome, posto/graduação e subunidade (nunca papel, status,
+      //    unidade, matrícula, e-mail ou comando: o isolamento entre batalhões depende de unidadeId)
+      // 2. Admin Geral pode aprovar, rejeitar ou alterar perfis
+      allow update: if isSignedIn() && isValidId(userId) && isValidUserProfile(incoming()) && (
+        isAdmin() ||
+        (
+          request.auth.uid == userId &&
+          request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['nome', 'postoGraduacao', 'subunidadeId', 'subunidadeNome', 'updatedAt'])
+        )
+      );
+
+      // Exclusão apenas pelo Admin Geral
+      allow delete: if isAdmin() && isValidId(userId);
+    }
+
+    // --- RESERVA DE MATRÍCULA (unicidade): matriculas/{chave} ---
+    // Gravada junto com o perfil no cadastro. Se a chave já existe, o create vira update e é negado.
+    match /matriculas/{chave} {
+      allow read: if false;
+      allow create: if isSignedIn() &&
+        chave.matches('^[A-Z0-9]{3,30}$') &&
+        incoming().keys().hasOnly(['uid', 'createdAt']) &&
+        incoming().uid == request.auth.uid;
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    // --- ADMINS COLLECTION ---
+    match /admins/{adminId} {
+      // Coleção /admins legível estritamente por administradores
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // --- UNITS COLLECTION (Catálogo de Batalhões e Unidades) ---
+    match /units/{unitId} {
+      // Qualquer usuário autenticado pode ler o catálogo de unidades
+      allow read: if isSignedIn();
+      // Somente Admin Geral gerencia o catálogo
+      allow write: if isAdmin();
+    }
+
+    // --- NOVA ESTRUTURA FÍSICA: units/{unidadeId}/checklists/{checklistId} ---
+    match /units/{unidadeId}/checklists/{checklistId} {
+      // Leitura individual:
+      // - Admin Geral lê qualquer checklist
+      // - Administrativo lê qualquer checklist do seu batalhão
+      // - Operacional lê apenas vistorias em que policialId == seu uid
+      allow get: if isSignedIn() && isValidId(checklistId) && isApprovedUser() && (
+        isAdmin() ||
+        (getUserData().unidadeId == unidadeId && (
+           getUserData().role == 'administrativo' ||
+           resource.data.get('policialId', resource.data.get('responsavelUid', '')) == request.auth.uid
+        ))
+      );
+
+      // Listagem direta na coleção da unidade:
+      // - Admin Geral pode listar checklists de qualquer unidade
+      // - Administrativo lista todas as vistorias do seu batalhão
+      // - Operacional lista apenas onde policialId == seu uid (via where('policialId', '==', uid))
+      allow list: if isSignedIn() && isApprovedUser() && (
+        isAdmin() ||
+        (getUserData().unidadeId == unidadeId && (
+           getUserData().role == 'administrativo' ||
+           resource.data.policialId == request.auth.uid
+        ))
+      );
+
+      // Gravação / Criação:
+      // - Deve validar que incoming().unidadeId == unidadeId
+      // - Admin Geral grava em qualquer unidade
+      // - Policial aprovado grava somente na unidade do seu perfil e assina a vistoria
+      allow create: if isSignedIn() && isValidId(checklistId) && isApprovedUser() &&
+        isValidChecklist(incoming()) &&
+        isConteudoVistoriaValido(incoming()) &&
+        incoming().unidadeId == unidadeId &&
+        (
+          isAdmin() ||
+          (
+            getUserData().unidadeId == unidadeId &&
+            (incoming().responsavelUid == request.auth.uid || incoming().policialId == request.auth.uid)
+          )
+        );
+
+      // Atualização:
+      // - Admin Geral atualiza qualquer checklist
+      // - Autor aprovado da mesma unidade atualiza se estiver em andamento/rascunho
+      // - Perfil administrativo da mesma unidade pode:
+      //     a) Atualizar checklist se estiver em andamento/rascunho; OU
+      //     b) Registrar resolução de demanda (demandaResolvida == true); OU
+      //     c) Registrar encaminhamento para manutenção (campo `tratamento`)
+      allow update: if isSignedIn() && isValidId(checklistId) && isApprovedUser() &&
+        isValidChecklist(incoming()) &&
+        incoming().unidadeId == unidadeId &&
+        (
+          isAdmin() ||
+          (
+            getUserData().unidadeId == unidadeId &&
+            incoming().createdAt == existing().createdAt &&
+            (
+              // Caso 1: Vistoria em andamento sendo editada/concluída
+              (
+                (existing().status in ['em_andamento', 'rascunho']) &&
+                isConteudoVistoriaValido(incoming()) &&
+                (
+                  existing().responsavelUid == request.auth.uid ||
+                  existing().policialId == request.auth.uid ||
+                  getUserData().role == 'administrativo'
+                )
+              ) ||
+              // Caso 2: Resolução administrativa de demanda com alteração
+              (
+                getUserData().role == 'administrativo' &&
+                incoming().demandaResolvida == true &&
+                request.resource.data.diff(resource.data).affectedKeys()
+                  .hasOnly(['temAlteracao', 'demandaResolvida', 'resolucao', 'atualizadoEm', 'updatedAt'])
+              ) ||
+              // Caso 3: Encaminhamento da demanda para manutenção ("Em tratamento"), sem dar baixa
+              (
+                getUserData().role == 'administrativo' &&
+                existing().get('temAlteracao', false) == true &&
+                existing().get('demandaResolvida', false) != true &&
+                incoming().get('demandaResolvida', false) != true &&
+                incoming().tratamento.status == 'em_tratamento' &&
+                request.resource.data.diff(resource.data).affectedKeys()
+                  .hasOnly(['tratamento', 'atualizadoEm', 'updatedAt'])
+              )
+            )
+          )
+        );
+
+      // Exclusão:
+      // - Admin Geral pode excluir
+      // - Autor pode excluir somente em andamento/rascunho
+      allow delete: if isSignedIn() && isValidId(checklistId) && isApprovedUser() && (
+        isAdmin() ||
+        (
+          getUserData().unidadeId == unidadeId &&
+          (existing().status in ['em_andamento', 'rascunho']) &&
+          (existing().responsavelUid == request.auth.uid || existing().policialId == request.auth.uid)
+        )
+      );
+    }
+
+    // --- SUBCOLEÇÃO DE VIATURAS: units/{unidadeId}/viaturas/{viaturaId} ---
+    match /units/{unidadeId}/viaturas/{viaturaId} {
+      // Leitura: usuário aprovado da própria unidade ou Admin Geral
+      allow read: if isApprovedUser() && (isAdmin() || getUserData().unidadeId == unidadeId);
+
+      // Criação e Atualização: Admin do batalhão da própria unidade ou Admin Geral
+      allow create, update: if isUnitAdmin(unidadeId) && isValidId(viaturaId) &&
+        isValidViatura(incoming()) && incoming().unidadeId == unidadeId;
+
+      // Exclusão: Admin do batalhão da própria unidade ou Admin Geral
+      allow delete: if isUnitAdmin(unidadeId) && isValidId(viaturaId);
+    }
+
+    // --- RESUMO DE PENDÊNCIAS POR VIATURA: units/{unidadeId}/pendenciasVtr/{placaKey} ---
+    // Alimenta o aviso "problema já conhecido" no formulário de nova vistoria.
+    // O policial operacional só lê as próprias vistorias, por isso o resumo fica separado.
+    match /units/{unidadeId}/pendenciasVtr/{placaKey} {
+      // Leitura: usuário aprovado da própria unidade ou Admin Geral
+      allow read: if isApprovedUser() && (isAdmin() || getUserData().unidadeId == unidadeId);
+
+      // Criação/atualização: qualquer policial aprovado da unidade (ao concluir vistoria) ou Admin Geral
+      allow create, update: if isApprovedUser() && isValidId(placaKey) &&
+        isValidPendenciaVtr(incoming(), placaKey) &&
+        incoming().unidadeId == unidadeId &&
+        (isAdmin() || getUserData().unidadeId == unidadeId);
+
+      // Exclusão (demanda resolvida): Admin do batalhão da unidade ou Admin Geral
+      allow delete: if isUnitAdmin(unidadeId) && isValidId(placaKey);
+    }
+
+    // --- REGRA DE COLLECTION GROUP PARA O ADMIN GERAL LISTAR TUDO ---
+    match /{path=**}/checklists/{checklistId} {
+      allow read: if isAdmin();
+    }
+
+    match /{path=**}/viaturas/{viaturaId} {
+      allow read: if isAdmin();
+    }
+
+    // --- REGRA DE COMPATIBILIDADE / MIGRAÇÃO DA COLEÇÃO RAIZ (REMOVER APÓS MIGRAÇÃO) ---
+    match /checklists/{checklistId} {
+      // REMOVER APÓS MIGRAÇÃO: Permite ao Admin Geral ler documentos antigos para cópia e exclusão após migração.
+      // Novas gravações (create/update) na raiz foram expressamente descontinuadas.
+      allow read, delete: if isAdmin();
+    }
+  }
+}

@@ -1,0 +1,107 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "Perfil de Usuário Policial Militar",
+      "description": "Dados cadastrais e credenciais do policial militar no sistema de checklists",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "nome": { "type": "string", "maxLength": 120 },
+        "matricula": { "type": "string", "maxLength": 30 },
+        "email": { "type": "string", "maxLength": 120 },
+        "role": { "type": "string", "enum": ["operacional", "administrativo", "admin_geral"] },
+        "rolePretendida": { "type": "string", "enum": ["operacional", "administrativo"] },
+        "status": { "type": "string", "enum": ["pendente", "aprovado", "rejeitado"] },
+        "grandeComando": { "type": "string", "maxLength": 60 },
+        "unidadeId": { "type": "string", "maxLength": 60 },
+        "unidadeNome": { "type": "string", "maxLength": 100 },
+        "subunidadeId": { "type": "string", "maxLength": 60 },
+        "subunidadeNome": { "type": "string", "maxLength": 100 },
+        "createdAt": { "type": "string", "maxLength": 40 },
+        "updatedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["uid", "nome", "matricula", "email", "role", "rolePretendida", "status", "grandeComando", "unidadeId", "unidadeNome", "createdAt"]
+    },
+    "Checklist": {
+      "title": "Checklist Operacional",
+      "description": "Formulário de vistoria e conformidade operacional da PMPI",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "tipo": { "type": "string", "enum": ["viatura", "armamento", "equipamentos", "posto", "patrulha"] },
+        "titulo": { "type": "string", "maxLength": 120 },
+        "status": { "type": "string", "enum": ["rascunho", "concluido", "com_alteracao", "critico"] },
+        "grandeComando": { "type": "string", "maxLength": 60 },
+        "unidadeId": { "type": "string", "maxLength": 60 },
+        "unidadeNome": { "type": "string", "maxLength": 100 },
+        "responsavelUid": { "type": "string", "maxLength": 128 },
+        "responsavelNome": { "type": "string", "maxLength": 120 },
+        "responsavelMatricula": { "type": "string", "maxLength": 30 },
+        "dataHora": { "type": "string", "maxLength": 40 },
+        "observacoesGerais": { "type": "string", "maxLength": 2000 },
+        "dadosEspecificos": { "type": "object" },
+        "itens": { "type": "array" },
+        "createdAt": { "type": "string", "maxLength": 40 },
+        "updatedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["id", "tipo", "titulo", "status", "grandeComando", "unidadeId", "unidadeNome", "responsavelUid", "responsavelNome", "responsavelMatricula", "dataHora", "itens", "createdAt"]
+    },
+    "Unit": {
+      "title": "Unidade Operacional da PMPI",
+      "description": "Batalhões, companhias e unidades especializadas vinculadas a Grandes Comandos",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 60 },
+        "grandeComando": { "type": "string", "maxLength": 60 },
+        "nome": { "type": "string", "maxLength": 100 },
+        "sigla": { "type": "string", "maxLength": 30 },
+        "cidade": { "type": "string", "maxLength": 80 },
+        "ativo": { "type": "boolean" }
+      },
+      "required": ["id", "grandeComando", "nome", "sigla", "cidade", "ativo"]
+    },
+    "ViaturaCadastrada": {
+      "title": "Viatura Cadastrada do Batalhão",
+      "description": "Ficha da viatura subordinada a um batalhão com controle de status e histórico de operância",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "unidadeId": { "type": "string", "maxLength": 80 },
+        "unidadeNome": { "type": "string", "maxLength": 120 },
+        "grandeComandoId": { "type": "string", "maxLength": 80 },
+        "placa": { "type": "string", "maxLength": 30 },
+        "marca": { "type": "string", "maxLength": 60 },
+        "modelo": { "type": "string", "maxLength": 60 },
+        "status": { "type": "string", "enum": ["operante", "inoperante"] },
+        "motivoInoperancia": { "type": "string", "maxLength": 500 },
+        "statusAtualizadoEm": { "type": "string", "maxLength": 60 },
+        "statusAtualizadoPor": { "type": "string", "maxLength": 120 },
+        "createdAt": { "type": "string", "maxLength": 60 },
+        "createdBy": { "type": "string", "maxLength": 120 }
+      },
+      "required": ["id", "unidadeId", "placa", "marca", "modelo", "status", "statusAtualizadoEm", "statusAtualizadoPor", "createdAt", "createdBy"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Perfis dos policiais militares e status de aprovação"
+    },
+    "/admins/{adminId}": {
+      "schema": { "$ref": "UserProfile" },
+      "description": "Registro de autoridade máxima do Administrador Geral"
+    },
+    "/units/{unitId}/checklists/{checklistId}": {
+      "schema": "Checklist",
+      "description": "Registros de checklists operacionais e vistorias vinculados a cada batalhão"
+    },
+    "/units/{unitId}/viaturas/{viaturaId}": {
+      "schema": "ViaturaCadastrada",
+      "description": "Viaturas policiais cadastradas do batalhão e controle de inoperância"
+    },
+    "/units/{unitId}": {
+      "schema": "Unit",
+      "description": "Catálogo de unidades e batalhões da PMPI"
+    }
+  }
+}
